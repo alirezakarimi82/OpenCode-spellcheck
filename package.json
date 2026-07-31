@@ -1,0 +1,38 @@
+{
+  "name": "opencode-spellcheck",
+  "version": "0.1.0",
+  "description": "Live, Word-style typo highlighting for the OpenCode TUI prompt.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "tui",
+    "spellcheck",
+    "spelling"
+  ],
+  "exports": {
+    "./tui": "./dist/tui.mjs"
+  },
+  "oc-plugin": {
+    "tui": "./dist/tui.mjs"
+  },
+  "scripts": {
+    "embed": "node scripts/embed-dictionary.mjs",
+    "bundle": "esbuild src/index.bundled.ts --bundle --format=esm --platform=node --target=node18 --external:node:* --external:@opencode-ai/* --external:@opentui/* --external:solid-js --external:solid-js/* --jsx=automatic --jsx-import-source=@opentui/solid --minify --outfile=dist/tui.mjs",
+    "build": "npm run embed && npm run bundle",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node scripts/test-bundle.mjs"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "*",
+    "@opentui/core": "^0.4.5",
+    "@opentui/solid": "^0.4.5",
+    "@types/node": "^26.1.1",
+    "dictionary-en": "4.0.0",
+    "esbuild": "0.28.1",
+    "nspell": "2.1.5",
+    "solid-js": "^1.9.12",
+    "typescript": "5.5.4"
+  }
+}

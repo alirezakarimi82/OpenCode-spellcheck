@@ -1,0 +1,19 @@
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": [
+    [
+      "file:///ABSOLUTE/PATH/TO/opencode-spellcheck/dist/tui.mjs",
+      {
+        "debounceMs": 250,
+        "color": "red",
+        "showStatusLine": true,
+        "inlineHighlight": true,
+        "minLength": 3,
+        "extraWords": ["opencode", "CAISO", "BESS", "LMP", "backtesting", "quantile"]
+      }
+    ]
+  ],
+  "keybinds": {
+    "spellcheck_add_word": "<leader>d"
+  }
+}
