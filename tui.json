@@ -11,8 +11,5 @@
         "extraWords": ["opencode", "CAISO", "BESS", "LMP", "backtesting", "quantile"]
       }
     ]
-  ],
-  "keybinds": {
-    "spellcheck_add_word": "<leader>d"
-  }
+  ]
 }

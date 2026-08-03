@@ -35,7 +35,8 @@ const MASK_PATTERNS: RegExp[] = [
   /https?:\/\/\S+/gi, // URLs
   /\b[\w.+-]+@[\w-]+\.[\w.-]+\b/g, // emails
   /(?:^|\s)@[^\s]+/g, // @file mentions
-  /(?:^|\s)[~./][^\s]*\/[^\s]*/g, // file paths containing a slash
+  /(?:^|[\s("'`[])[\w.~-]*\/[^\s\])}"'`]+/g, // file paths containing a slash — bare ("src/index.ts") or prefixed ("./src/index.ts", "~/.bashrc", "/usr/bin")
+  /\b[\w-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|c|cc|cpp|h|hpp|cs|php|json|jsonc|ya?ml|toml|md|mdx|txt|xml|html?|css|scss|less|sql|sh|bash|zsh|env|ini|cfg|conf|lock|log|csv|svg)\b/gi, // bare filenames with a code/config extension and no path separator (e.g. "config.yaml", "README.md")
   /\b0x[0-9a-fA-F]+\b/g, // hex literals
   /\bv?\d+(?:\.\d+)+(?:[-+][\w.]+)?\b/g, // version numbers / semver
   /\b\d[\w.]*\b/g, // anything starting with a digit
@@ -48,7 +49,9 @@ function blank(text: string, re: RegExp): string {
 
 /** True if a word is an identifier we should not flag (camelCase, snake_case, etc.). */
 function isIdentifierLike(word: string): boolean {
-  if (word.includes("_")) return true // snake_case
+  // snake_case fragments never reach here as a single WORD_RE match (the
+  // regex can't capture underscores) — they're caught by the before/after
+  // neighbour check below instead.
   if (/[a-z][A-Z]/.test(word)) return true // camelCase / PascalCase transition
   if (/^[A-Z]{2,}$/.test(word)) return true // ALLCAPS acronym (API, HTTP, CAISO...)
   if (/^[A-Z]+[a-z]+[A-Z]/.test(word)) return true // PascalCase

@@ -4,7 +4,6 @@ declare module "nspell" {
   interface Nspell {
     correct(word: string): boolean
     suggest(word: string): string[]
-    add(word: string): void
   }
   function nspell(dict: { aff: Buffer; dic: Buffer }): Nspell
   export default nspell

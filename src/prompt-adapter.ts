@@ -30,19 +30,52 @@ export function notify(
     }
   }
   // Legacy / alternate shapes, kept for forward-compat.
-  const notifiers: Array<() => unknown> = [
-    () => api?.toast?.({ title, message }),
-    () => api?.toast?.show?.(message),
-    () => api?.notify?.(message),
-    () => api?.attention?.notify?.({ message }),
-    () => api?.status?.set?.(message),
+  //
+  // Each candidate returns whether it actually found and invoked a function,
+  // not just whether the call avoided throwing. Optional chaining alone
+  // can't tell "this method doesn't exist" apart from "it exists and
+  // succeeded" — both simply don't throw — so a naive `n(); return` loop
+  // stops after the very first candidate regardless of whether `api.toast`
+  // was really there. Explicitly checking `typeof fn === "function"` first
+  // (matching the primary `api.ui.toast` check above) lets the probe
+  // actually fall through to a working candidate further down the list.
+  const notifiers: Array<() => boolean> = [
+    () => {
+      const fn = api?.toast
+      if (typeof fn !== "function") return false
+      fn({ title, message })
+      return true
+    },
+    () => {
+      const fn = api?.toast?.show
+      if (typeof fn !== "function") return false
+      fn(message)
+      return true
+    },
+    () => {
+      const fn = api?.notify
+      if (typeof fn !== "function") return false
+      fn(message)
+      return true
+    },
+    () => {
+      const fn = api?.attention?.notify
+      if (typeof fn !== "function") return false
+      fn({ message })
+      return true
+    },
+    () => {
+      const fn = api?.status?.set
+      if (typeof fn !== "function") return false
+      fn(message)
+      return true
+    },
   ]
   for (const n of notifiers) {
     try {
-      n()
-      return
+      if (n()) return
     } catch {
-      /* keep probing */
+      /* this candidate exists but threw — keep probing */
     }
   }
 }
