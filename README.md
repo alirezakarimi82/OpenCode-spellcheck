@@ -20,7 +20,12 @@ inside the terminal.
   after a debounce (default 250 ms).
 - 🧠 **Real dictionary.** Hunspell via `nspell` + `dictionary-en`, with
   edit-distance-ranked suggestions that account for transpositions
-  (`recieve → receive` not `revive`; `teh → the` not `tech`).
+  (`recieve → receive` not `revive`; `teh → the` not `tech`). When
+  nspell's n-gram suggester comes up empty or weak — `miscellenous` →
+  `miscellaneous`, `metcoulous` → `meticulous` — candidates are generated
+  straight from the raw dictionary via a bounded Damerau-Levenshtein
+  search and merged into the ranking, so a fix is still offered instead of
+  a bare flagged word.
 - 🚫 **Code-aware.** Skips fenced/inline code, `@file` mentions, `/commands`,
   `!shell` lines, URLs, emails, hex, numbers/versions, identifiers
   (`camelCase`, `snake_case`, `ALLCAPS`), file paths whether bare or prefixed
@@ -165,6 +170,21 @@ dist/
 ```
 
 ## Changelog
+
+### 0.3.0
+
+Suggestion-quality release.
+
+- Fixed: words whose correct spelling nspell's n-gram suggester can't find
+  (e.g. `miscellenous`, `databse`-class typos) previously produced **no
+  suggestion at all** — the toast showed a bare flagged word. The engine
+  now parses the embedded dictionary into a word index and generates
+  fallback candidates via a bounded Damerau-Levenshtein search, merged and
+  ranked together with nspell's own suggestions.
+- Fixed: ranking ties left equal-distance candidates in nspell's raw
+  order, so `grammer` suggested `crammer` before `grammar`. The scorer now
+  prefers the candidate sharing the longest leftmost run with the typo
+  (typos usually corrupt the tail of a word).
 
 ### 0.2.0
 

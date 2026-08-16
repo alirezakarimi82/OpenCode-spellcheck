@@ -5,7 +5,11 @@
  * + `dictionary-en`). It adds:
  *   - a per-word LRU-ish result cache (checking is called on every keystroke)
  *   - a project vocabulary supplied through the plugin's `extraWords` option
- *   - lazy async initialisation that never throws into the TUI render loop
+ *   - dictionary-generated fallback suggestions: when nspell's n-gram
+ *     suggester comes up empty ("miscellenous" → []), candidates are
+ *     generated straight from the raw dictionary via bounded
+ *     Damerau-Levenshtein and merged with nspell's own
+ *   - lazy async initialisation that never blocks the TUI render loop
  *
  * If the optional dependencies are unavailable, the engine degrades to a
  * no-op (returns "everything is spelled correctly") so the plugin can never
@@ -54,6 +58,14 @@ export class SpellEngine {
   private readonly dictionaryOpt?: EngineOptions["dictionary"]
   private readonly nspellFactory?: EngineOptions["nspellFactory"]
   public available = false
+  /**
+   * Lowercased dictionary words, bucketed by length, parsed from the same
+   * `.dic` bytes nspell consumes. Lets us *generate* correction candidates
+   * from the raw dictionary when nspell's own n-gram suggester comes up
+   * short or wrong. Null when the engine is in no-op mode or the parse
+   * failed (suggestions then simply come from nspell alone).
+   */
+  private dictByLen: Map<number, string[]> | null = null
 
   constructor(opts: EngineOptions = {}) {
     this.maxSuggestions = opts.maxSuggestions ?? 5
@@ -93,6 +105,14 @@ export class SpellEngine {
 
       this.nspell = factory!(dict) as Nspell
       this.available = true
+      // Build the raw-word index. A failure here must never take down the
+      // whole engine: it only feeds the bonus dictionary-scan suggestions,
+      // while nspell-based checking/suggesting keeps working without it.
+      try {
+        this.dictByLen = buildDictIndex(dict)
+      } catch {
+        this.dictByLen = null
+      }
     } catch (err) {
       // Optional deps not installed → graceful no-op mode.
       this.available = false
@@ -120,15 +140,20 @@ export class SpellEngine {
     const correct = this.nspell.correct(word) || this.nspell.correct(key)
     let suggestions: string[] = []
     if (!correct) {
-      // Only pay for nspell.suggest() — the expensive part of a Hunspell
-      // check — when the word actually needs a correction; most words in
-      // real prose are already correct. Rank the *full* raw candidate list
-      // before truncating to maxSuggestions, so a strong match that isn't
-      // in nspell's own top N doesn't get discarded before it's compared.
-      suggestions = this._rankSuggestions(word, this.nspell.suggest(word)).slice(
-        0,
-        this.maxSuggestions,
-      )
+      // Only pay for nspell.suggest() + the dictionary scan — the expensive
+      // parts of a Hunspell check — when the word actually needs a
+      // correction; most words in real prose are already correct. nspell's
+      // suggester is n-gram based and often returns nothing for typos more
+      // than ~1 edit from the dictionary ("miscellenous" → []), so we union
+      // its raw output with candidates generated straight from the
+      // dictionary, then rank the *full* merged list before truncating to
+      // maxSuggestions — a strong match buried deep in nspell's own output
+      // must not be discarded before it's compared.
+      suggestions = this._mergeCandidates(
+        word,
+        this.nspell.suggest(word),
+        this._dictionaryCandidates(word),
+      ).slice(0, this.maxSuggestions)
     }
 
     const result: SpellResult = correct
@@ -145,17 +170,68 @@ export class SpellEngine {
   }
 
   /**
-   * Re-rank spellcheck suggestions to prioritize more likely corrections.
-   * Common typos like "recive" should suggest "receive" first, not "revive".
+   * Union nspell's raw suggestions with our dictionary-generated ones,
+   * dedupe case-insensitively (nspell's casing wins on collision — nspell
+   * knows the real inflection/case of its candidates), and rank the merged
+   * set with the shared scorer. Totals are tiny (nspell's ~15 + ≤10
+   * generated), so full ranking beats truncating the sources first.
    */
-  private _rankSuggestions(word: string, suggestions: string[]): string[] {
-    const target = word.toLowerCase()
-    
-    return suggestions.sort((a, b) => {
-      const scoreA = this._scoreSuggestion(target, a)
-      const scoreB = this._scoreSuggestion(target, b)
-      return scoreA - scoreB
-    })
+  private _mergeCandidates(
+    target: string,
+    nspellWords: string[],
+    dictWords: string[],
+  ): string[] {
+    const seen = new Set<string>()
+    const scored: Array<{ word: string; score: number }> = []
+    const add = (w: string) => {
+      const key = w.toLowerCase()
+      if (seen.has(key)) return
+      seen.add(key)
+      scored.push({ word: w, score: this._scoreSuggestion(target, w) })
+    }
+    for (const w of nspellWords) add(w)
+    for (const w of dictWords) add(w)
+    scored.sort((a, b) => a.score - b.score)
+    return scored.map((s) => s.word)
+  }
+
+  /**
+   * Generate correction candidates directly from the raw dictionary word
+   * index (parsed from the same `.dic` nspell uses) via a bounded
+   * Damerau-Levenshtein search over the length-neighbourhood buckets. This
+   * fills the gap where nspell's n-gram suggester returns nothing —
+   * "miscellenous" (nspell: []) → "miscellaneous" — or buries the true
+   * fix. Only runs for misspelled words (never the common correct-word
+   * path) and the result is cached by `check()`, so it's paid at most once
+   * per distinct typo.
+   */
+  private _dictionaryCandidates(target: string): string[] {
+    const index = this.dictByLen
+    if (!index) return []
+    const t = target.toLowerCase()
+    // The bucketed search is O(neighbourhood); a few ms worst case. Very
+    // long tokens are usually not prose — skip to stay out of the
+    // pathological case.
+    if (t.length < 3 || t.length > 18) return []
+    const maxDist = 3
+    const matches: Array<{ word: string; score: number }> = []
+    for (
+      let len = Math.max(2, t.length - maxDist);
+      len <= t.length + maxDist;
+      len++
+    ) {
+      const bucket = index.get(len)
+      if (!bucket) continue
+      for (const w of bucket) {
+        if (this._distBounded(t, w, maxDist) <= maxDist) {
+          matches.push({ word: w, score: this._scoreSuggestion(t, w) })
+        }
+      }
+    }
+    matches.sort((a, b) => a.score - b.score)
+    // Keep the strongest handful; `check()` unions these with nspell's own
+    // suggestions before capping at maxSuggestions.
+    return matches.slice(0, 10).map((m) => m.word)
   }
 
   /**
@@ -181,8 +257,20 @@ export class SpellEngine {
     const s = suggestion.toLowerCase()
     const dist = this._editDistance(target, s)
     const lenDiff = Math.abs(s.length - target.length)
+    // Among candidates an equal edit distance away, prefer the one whose
+    // *leftmost* run matches the typo: typos overwhelmingly corrupt the
+    // tail of a word, so "grammer" should fix to "grammar", not "crammer"
+    // (both are one substitution away).
+    const leftPenalty = 10 - Math.min(10, this._leftCommonLength(target, s))
     const transposition = this._isAdjacentTransposition(target, s) ? 10 : 0
-    return dist * 100 + lenDiff - transposition
+    return dist * 100 + lenDiff + leftPenalty - transposition
+  }
+
+  /** Length of the shared prefix of `a` and `b`. */
+  private _leftCommonLength(a: string, b: string): number {
+    let i = 0
+    while (i < a.length && i < b.length && a[i] === b[i]) i++
+    return i
   }
 
   /**
@@ -233,4 +321,88 @@ export class SpellEngine {
     return d[m][n]
   }
 
+  /**
+   * Bounded Damerau-Levenshtein (restricted "optimal string alignment"
+   * variant). Returns the exact distance when it is ≤ `max`, otherwise
+   * `max + 1` — relying on the fact that any edit path with ≤ max edits
+   * keeps the DP cell on the |i−j| ≤ max diagonal band, so cells outside
+   * the band can never lie on a short path and the full matrix isn't
+   * needed. This keeps scanning tens of thousands of dictionary words
+   * cheap enough for the per-keystroke path (each row is only ~2·max+1
+   * cells wide, and an early bail-out abandons a word as soon as its whole
+   * band exceeds max).
+   */
+  private _distBounded(a: string, b: string, max: number): number {
+    const m = a.length
+    const n = b.length
+    const INF = max + 1
+    if (Math.abs(m - n) > max) return INF
+    if (m === 0) return n <= max ? n : INF
+    if (n === 0) return m <= max ? m : INF
+    let r0 = new Array<number>(n + 1).fill(INF) // row i-2
+    let r1 = new Array<number>(n + 1).fill(INF) // row i-1
+    let r2 = new Array<number>(n + 1).fill(INF) // row i
+    for (let j = 0; j <= max && j <= n; j++) r1[j] = j
+    for (let i = 1; i <= m; i++) {
+      const lo = Math.max(1, i - max)
+      const hi = Math.min(n, i + max)
+      r2[0] = i > max ? INF : i
+      for (let j = lo; j <= hi; j++) {
+        let v = Math.min(
+          r1[j] + 1, // deletion
+          r2[j - 1] + 1, // insertion
+          r1[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1), // substitution
+        )
+        if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+          v = Math.min(v, r0[j - 2] + 1) // transposition
+        }
+        r2[j] = v
+      }
+      // If the whole band of this row exceeds max, no ≤max-edit path can
+      // pass through it, so the distance is > max — prune early.
+      let rowMin = INF
+      for (let j = lo; j <= hi; j++) if (r2[j] < rowMin) rowMin = r2[j]
+      if (rowMin > max) return INF
+      const t = r0
+      r0 = r1
+      r1 = r2
+      r2 = t
+      // Recycled buffer: out-of-band cells must never leak stale values
+      // into a later band via the deletion branch.
+      r2.fill(INF)
+    }
+    return r1[n]
+  }
+}
+
+/**
+ * Parse the Hunspell `.dic` body (the same bytes nspell itself consumes)
+ * into a lowercase word index bucketed by word length. The format is plain
+ * text: a line count, then one "word/flags" entry per line. Only plain
+ * alpha(+apostrophe) tokens in a sane length range are kept — those are
+ * the words the tokenizer can flag as prose typos.
+ */
+function buildDictIndex(dict: HunspellData): Map<number, string[]> | null {
+  const buf = Buffer.isBuffer(dict.dic) ? dict.dic : Buffer.from(dict.dic)
+  const index = new Map<number, string[]>()
+  const seen = new Set<string>()
+  const lines = buf.toString("utf8").split(/\r?\n/)
+  for (let i = 1; i < lines.length; i++) {
+    let line = lines[i].trim()
+    if (!line) continue
+    const slash = line.indexOf("/")
+    if (slash !== -1) line = line.slice(0, slash)
+    const w = line.toLowerCase()
+    if (w.length < 2 || w.length > 24) continue
+    if (!/^[a-z][a-z']*$/.test(w)) continue
+    if (seen.has(w)) continue
+    seen.add(w)
+    let bucket = index.get(w.length)
+    if (!bucket) {
+      bucket = []
+      index.set(w.length, bucket)
+    }
+    bucket.push(w)
+  }
+  return index.size > 0 ? index : null
 }

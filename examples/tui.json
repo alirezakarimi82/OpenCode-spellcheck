@@ -5,7 +5,6 @@
       "file:///ABSOLUTE/PATH/TO/opencode-spellcheck/dist/tui.mjs",
       {
         "debounceMs": 250,
-        "color": "red",
         "showStatusLine": true,
         "inlineHighlight": true,
         "minLength": 3,

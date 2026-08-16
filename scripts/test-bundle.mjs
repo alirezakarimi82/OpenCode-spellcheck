@@ -90,6 +90,41 @@ await test("flags real typos via the event-based fallback, ranked sensibly", asy
   api.lifecycle.disposer?.()
 })
 
+await test("generates dictionary-backed suggestions when nspell returns none", async () => {
+  const { default: plugin } = await import(bundlePath)
+  let toastMsg = null
+  const { api, getAppendHandler } = makeBaseApi({
+    ui: { toast: (msg) => { toastMsg = msg.message } },
+  })
+  plugin.tui(api, { debounceMs: 10, showStatusLine: true, minLength: 3 })
+  await new Promise((r) => setTimeout(r, 30))
+  await typeIntoBuffer(
+    getAppendHandler(),
+    "be miscellenous let me be grammer and metcoulous",
+  )
+  assert.ok(toastMsg, "expected a toast to fire")
+  // miscellenous: nspell.suggest() returns [] for this one — the fix must
+  // come from the dictionary-generate fallback
+  assert.match(
+    toastMsg,
+    /miscellenous→miscellaneous/,
+    `miscellenous should suggest miscellaneous, got: ${toastMsg}`,
+  )
+  // grammer: one substitution away from both "grammar" and "crammer" —
+  // the left-common tiebreak must pick "grammar"
+  assert.match(
+    toastMsg,
+    /grammer→grammar/,
+    `grammer should rank grammar first (not crammer), got: ${toastMsg}`,
+  )
+  assert.match(
+    toastMsg,
+    /metcoulous→meticulous/,
+    `metcoulous should suggest meticulous, got: ${toastMsg}`,
+  )
+  api.lifecycle.disposer?.()
+})
+
 await test("does not flag bare relative paths or bare filenames", async () => {
   const { default: plugin } = await import(bundlePath)
   let toastMsg = null
